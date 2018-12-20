@@ -14,10 +14,13 @@
   * 结果表：mysql，SQlServer,oracle,hbase，elasticsearch5.x，mongo，redis,cassandra
 
 # 后续开发计划
-  * 增加kafka结果表功能
   * 增加SQL支持CEP
   * 维表快照
   * sql优化（谓词下移等）
+  * serverSocket 源表
+  * console 结果表
+  * kafka avro格式
+  * topN
 
 ## 1 快速起步
 ### 1.1 运行模式
@@ -49,6 +52,10 @@ mvn clean package -Dmaven.test.skip
 
 ```
 sh submit.sh -sql D:\sideSql.txt  -name xctest -remoteSqlPluginPath /opt/dtstack/150_flinkplugin/sqlplugin   -localSqlPluginPath D:\gitspace\flinkStreamSQL\plugins   -addjar \["udf.jar\"\] -mode yarn -flinkconf D:\flink_home\kudu150etc  -yarnconf D:\hadoop\etc\hadoopkudu -confProp \{\"time.characteristic\":\"EventTime\",\"sql.checkpoint.interval\":10000\}
+```
+或
+```
+sh submit.sh /user/home/xxx.json
 ```
 
 #### 1.4.2 命令行参数选项
