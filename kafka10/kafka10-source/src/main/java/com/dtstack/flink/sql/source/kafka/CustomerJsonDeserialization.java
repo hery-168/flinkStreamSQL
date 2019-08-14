@@ -25,9 +25,13 @@ import com.dtstack.flink.sql.source.AbsDeserialization;
 import com.dtstack.flink.sql.source.kafka.metric.KafkaTopicPartitionLagMetric;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
+import org.apache.flink.calcite.shaded.com.google.common.base.Strings;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.shaded.guava18.com.google.common.collect.Maps;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.JsonNodeType;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ArrayNode;
 import org.apache.flink.streaming.connectors.kafka.internal.KafkaConsumerThread;
 import org.apache.flink.streaming.connectors.kafka.internals.AbstractFetcher;
 import org.apache.flink.types.Row;
@@ -40,6 +44,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 
 import static com.dtstack.flink.sql.metric.MetricConstant.*;
@@ -75,12 +80,18 @@ public class CustomerJsonDeserialization extends AbsDeserialization<Row> {
 
     private boolean firstMsg = true;
 
-    public CustomerJsonDeserialization(TypeInformation<Row> typeInfo){
+    private Map<String, JsonNode> nodeAndJsonNodeMapping = Maps.newHashMap();
+
+    private Map<String, String> rowAndFieldMapping;
+
+    public CustomerJsonDeserialization(TypeInformation<Row> typeInfo, Map<String, String> rowAndFieldMapping){
         this.typeInfo = typeInfo;
 
         this.fieldNames = ((RowTypeInfo) typeInfo).getFieldNames();
 
         this.fieldTypes = ((RowTypeInfo) typeInfo).getFieldTypes();
+
+        this.rowAndFieldMapping= rowAndFieldMapping;
     }
 
     @Override
@@ -98,12 +109,14 @@ public class CustomerJsonDeserialization extends AbsDeserialization<Row> {
 
         try {
             numInRecord.inc();
-            numInBytes.inc(message.length);
+            if(message!=null){numInBytes.inc(message.length);}
 
             JsonNode root = objectMapper.readTree(message);
+            parseTree(root, null);
             Row row = new Row(fieldNames.length);
+
             for (int i = 0; i < fieldNames.length; i++) {
-                JsonNode node = getIgnoreCase(root, fieldNames[i]);
+                JsonNode node = getIgnoreCase(fieldNames[i]);
 
                 if (node == null) {
                     if (failOnMissingField) {
@@ -114,7 +127,12 @@ public class CustomerJsonDeserialization extends AbsDeserialization<Row> {
                     }
                 } else {
                     // Read the value as specified type
-                    Object value = objectMapper.treeToValue(node, fieldTypes[i].getTypeClass());
+                    Object value;
+                    if (node.isValueNode()) {
+                      value = objectMapper.treeToValue(node, fieldTypes[i].getTypeClass());
+                    } else {
+                      value = node.toString();
+                    }
                     row.setField(i, value);
                 }
             }
@@ -125,25 +143,73 @@ public class CustomerJsonDeserialization extends AbsDeserialization<Row> {
             //add metric of dirty data
             dirtyDataCounter.inc();
             return null;
+        }finally {
+            nodeAndJsonNodeMapping.clear();
         }
     }
+
+    public JsonNode getIgnoreCase(String key) {
+        String nodeMappingKey = rowAndFieldMapping.getOrDefault(key, key);
+
+        return nodeAndJsonNodeMapping.get(nodeMappingKey);
+    }
+
 
     public void setFailOnMissingField(boolean failOnMissingField) {
         this.failOnMissingField = failOnMissingField;
     }
 
-    public JsonNode getIgnoreCase(JsonNode jsonNode, String key) {
+    private void parseTree(JsonNode jsonNode, String prefix){
 
-        Iterator<String> iter = jsonNode.fieldNames();
-        while (iter.hasNext()) {
-            String key1 = iter.next();
-            if (key1.equalsIgnoreCase(key)) {
-                return jsonNode.get(key1);
+      if (jsonNode.isArray()) {
+        ArrayNode array = (ArrayNode) jsonNode;
+        for (int i = 0; i < array.size(); i++) {
+          JsonNode child = array.get(i);
+          String nodeKey = getNodeKey(prefix, i);
+
+          if (child.isValueNode()) {
+            nodeAndJsonNodeMapping.put(nodeKey, child);
+          } else {
+            if (rowAndFieldMapping.containsValue(nodeKey)) {
+              nodeAndJsonNodeMapping.put(nodeKey, child);
             }
+            parseTree(child, nodeKey);
+          }
+        }
+        return;
+      }
+
+        Iterator<String> iterator = jsonNode.fieldNames();
+        while (iterator.hasNext()){
+            String next = iterator.next();
+            JsonNode child = jsonNode.get(next);
+            String nodeKey = getNodeKey(prefix, next);
+
+        if (child.isValueNode()) {
+          nodeAndJsonNodeMapping.put(nodeKey, child);
+        } else {
+          if (rowAndFieldMapping.containsValue(nodeKey)) {
+            nodeAndJsonNodeMapping.put(nodeKey, child);
+          }
+          parseTree(child, nodeKey);
+        }
+      }
+    }
+
+    private String getNodeKey(String prefix, String nodeName){
+        if(Strings.isNullOrEmpty(prefix)){
+            return nodeName;
         }
 
-        return null;
+        return prefix + "." + nodeName;
+    }
 
+    private String getNodeKey(String prefix, int i) {
+      if (Strings.isNullOrEmpty(prefix)) {
+        return "[" + i + "]";
+      }
+
+      return prefix + "[" + i + "]";
     }
 
     public void setFetcher(AbstractFetcher<Row, ?> fetcher) {
